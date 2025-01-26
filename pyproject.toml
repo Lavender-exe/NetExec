@@ -68,6 +68,7 @@ sqlalchemy = "^2.0.4"
 termcolor = ">=2.4.0"
 terminaltables = "^3.1.0"
 xmltodict = "^0.13.0"
+donut-shellcode = ">=1.0.2"
 
 [tool.poetry.group.dev.dependencies]
 flake8 = "*"
